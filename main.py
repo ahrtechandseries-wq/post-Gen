@@ -5,10 +5,8 @@ from threading import Thread
 
 # --- Flask Server Setup ---
 app = Flask(__name__)
-
 @app.route('/')
-def home():
-    return "NexFlix Post Generator is Active!"
+def home(): return "NexFlix Private Gen is Active!"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -20,6 +18,8 @@ def keep_alive():
 # --- Config ---
 API_TOKEN = os.getenv('API_TOKEN')
 TMDB_API_KEY = os.getenv('TMDB_API_KEY')
+# আপনার আইডি এখানে ফিক্সড করে দেওয়া হলো
+ADMIN_ID = 7414830213 
 
 bot = telebot.TeleBot(API_TOKEN)
 
@@ -29,13 +29,11 @@ def get_tmdb_data(q):
     try:
         res = requests.get(search_url).json()
         if not res['results']: return None
-        
         movie_id = res['results'][0]['id']
         detail_url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={TMDB_API_KEY}&language=en-US"
         movie = requests.get(detail_url).json()
         
         genres = ", ".join([g['name'] for g in movie.get('genres', [])])
-        # ইমেজের সাইজ একটু বাড়িয়ে দিলাম (w500)
         poster_path = movie.get('poster_path')
         poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None
         
@@ -50,17 +48,24 @@ def get_tmdb_data(q):
             "overview": movie.get('overview', 'No description available.'),
             "poster": poster_url
         }
-    except Exception as e:
-        print(f"TMDB API Error: {e}")
-        return None
+    except: return None
 
 # --- Telegram Handlers ---
 @bot.message_handler(commands=['start'])
 def start(m):
-    bot.reply_to(m, "🎬 *NexFlix Post Generator*\nমুভির নাম লিখে পাঠান, আমি পোস্টারসহ পোস্ট দেব।", parse_mode="Markdown")
+    # শুধু আপনি স্টার্ট দিলে কাজ করবে
+    if m.from_user.id != ADMIN_ID:
+        bot.reply_to(m, "❌ *অ্যাক্সেস ডিনাইড!*\nএই বটটি ব্যক্তিগত ব্যবহারের জন্য।", parse_mode="Markdown")
+        return
+    bot.reply_to(m, "🎬 *Welcome Admin!*\nমুভির নাম লিখে মেসেজ দিন, আমি পোস্টারসহ ডিটেইলস দিচ্ছি।", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: True)
 def generate_post(m):
+    # সিকিউরিটি চেক: আপনি ছাড়া অন্য কেউ মেসেজ দিলে কাজ করবে না
+    if m.from_user.id != ADMIN_ID:
+        bot.reply_to(m, "⚠️ আপনি এই বটটি ব্যবহারের অনুমতি পাননি।", parse_mode="Markdown")
+        return
+
     query = m.text.strip()
     if len(query) < 2: return
     
@@ -84,20 +89,14 @@ def generate_post(m):
     
     try:
         bot.delete_message(m.chat.id, status_msg.message_id)
-        
         if movie['poster']:
-            # ইমেজটি ডাউনলোড করে পাঠানো (এতে ইমেজ আসার সম্ভাবনা ১০০%)
             photo_res = requests.get(movie['poster'])
             if photo_res.status_code == 200:
                 photo_content = io.BytesIO(photo_res.content)
                 bot.send_photo(m.chat.id, photo_content, caption=caption, parse_mode="Markdown")
-            else:
-                bot.send_message(m.chat.id, caption, parse_mode="Markdown")
-        else:
-            bot.send_message(m.chat.id, caption, parse_mode="Markdown")
-            
-    except Exception as e:
-        print(f"Detailed Error: {e}")
+            else: bot.send_message(m.chat.id, caption, parse_mode="Markdown")
+        else: bot.send_message(m.chat.id, caption, parse_mode="Markdown")
+    except:
         bot.send_message(m.chat.id, caption + "\n\n⚠️ _ইমেজ লোড করা যায়নি!_", parse_mode="Markdown")
 
 if __name__ == "__main__":
