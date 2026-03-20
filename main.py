@@ -3,19 +3,25 @@ from telebot import types
 from flask import Flask
 from threading import Thread
 
-# --- আপনার দেওয়া কনফিগারেশন ---
-API_TOKEN = '8444879932:AAFqLVzDMUX25Jpjpz7nMgq8paVlJyYc0pk'
-TMDB_API_KEY = '6db356648512d4d2054db80a99cbfb39'
-ADMIN_ID = 7414830213
+# --- Render Environment Variables (এগুলো হাইড থাকবে) ---
+API_TOKEN = os.getenv('API_TOKEN')
+TMDB_API_KEY = os.getenv('TMDB_API_KEY')
+ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
 
 bot = telebot.TeleBot(API_TOKEN)
 
-# --- Flask Server (Render-কে সচল রাখতে) ---
+# --- Flask Server (Render Keep Alive) ---
 app = Flask('')
 @app.route('/')
-def home(): return "Post Generator is 100% Active!"
-def run(): app.run(host='0.0.0.0', port=8080)
-def keep_alive(): Thread(target=run).start()
+def home(): return "Post Generator is Secure & Active!"
+
+def run():
+    # Render সাধারণত ৮0৮0 বা ১0000 পোর্ট ব্যবহার করে
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    Thread(target=run).start()
 
 # --- TMDB Logic ---
 def get_tmdb_data(q):
@@ -47,21 +53,19 @@ def get_tmdb_data(q):
 # --- Handlers ---
 @bot.message_handler(commands=['start'])
 def start(m):
-    bot.reply_to(m, "🎬 *NexFlix Post Generator*\n\nযেকোনো মুভির নাম লিখে মেসেজ দিন, আমি সুন্দর পোস্ট বানিয়ে দেব।", parse_mode="Markdown")
+    bot.reply_to(m, "🎬 *NexFlix Post Generator*\nমুভির নাম লিখে মেসেজ দিন।", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: True)
 def generate(m):
     q = m.text.strip()
     if len(q) < 2: return
     
-    # অ্যাডমিন বা ইউজার যেই হোক, পোস্ট জেনারেট হবে
-    status = bot.reply_to(m, "⏳ *অপেক্ষা করুন...* তথ্য সংগ্রহ করা হচ্ছে।")
+    status = bot.reply_to(m, "⏳ *তথ্য সংগ্রহ করা হচ্ছে...*")
     movie = get_tmdb_data(q)
     
     if not movie:
-        return bot.edit_message_text("😔 দুঃখিত, মুভিটি পাওয়া যায়নি!", m.chat.id, status.message_id)
+        return bot.edit_message_text("😔 মুভিটি পাওয়া যায়নি!", m.chat.id, status.message_id)
 
-    # আপনার স্ক্রিনশটের মতো হুবহু সাজানো পোস্ট
     caption = (
         f"🎬 *{movie['title']}*\n"
         f"📅 *Release:* {movie['date']}\n"
@@ -83,3 +87,4 @@ def generate(m):
 if __name__ == "__main__":
     keep_alive()
     bot.infinity_polling()
+    
