@@ -3,7 +3,7 @@ from telebot import types
 from flask import Flask
 from threading import Thread
 
-# --- Flask Server Setup (Gunicorn-এর ঝামেলা এড়াতে) ---
+# --- Flask Server Setup ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -11,7 +11,6 @@ def home():
     return "NexFlix Post Generator is Active!"
 
 def run():
-    # Render-এর ডাইনামিক পোর্ট হ্যান্ডেল করার জন্য
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
@@ -21,7 +20,6 @@ def keep_alive():
 # --- Config (Render-এর Environment Variables থেকে নিবে) ---
 API_TOKEN = os.getenv('API_TOKEN')
 TMDB_API_KEY = os.getenv('TMDB_API_KEY')
-ADMIN_ID = os.getenv('ADMIN_ID') # এটি অপশনাল এই বটের জন্য
 
 bot = telebot.TeleBot(API_TOKEN)
 
@@ -40,7 +38,7 @@ def get_tmdb_data(q):
         poster = f"https://image.tmdb.org/t/p/w500{movie.get('poster_path')}" if movie.get('poster_path') else None
         
         return {
-            "title": movie.get('title'),
+            "title": movie.get('title', 'N/A'),
             "date": movie.get('release_date', 'N/A'),
             "runtime": movie.get('runtime', 'N/A'),
             "rating": movie.get('vote_average', '0.0'),
@@ -50,7 +48,7 @@ def get_tmdb_data(q):
             "overview": movie.get('overview', 'No description available.')
         }
     except Exception as e:
-        print(f"Error fetching data: {e}")
+        print(f"TMDB API Error: {e}")
         return None
 
 # --- Telegram Handlers ---
@@ -70,7 +68,9 @@ def generate_post(m):
     if not movie:
         return bot.edit_message_text("😔 দুঃখিত! মুভিটি পাওয়া যায়নি।", m.chat.id, status_msg.message_id)
 
-    # আপনার স্ক্রিনশটের স্টাইল অনুযায়ী সাজানো ক্যাপশন
+    # ক্যাপশন ১০০০ অক্ষরের মধ্যে রাখা হয়েছে যাতে টেলিগ্রাম রিজেক্ট না করে
+    overview = movie['overview'][:450] + "..." if len(movie['overview']) > 450 else movie['overview']
+
     caption = (
         f"🎬 *{movie['title'].upper()}*\n\n"
         f"📅 *Release:* {movie['date']}\n"
@@ -79,20 +79,25 @@ def generate_post(m):
         f"🎭 *Genres:* {movie['genres']}\n"
         f"🏢 *Studio:* {movie['studio']}\n"
         f"🌐 *Languages:* English / Hindi\n\n"
-        f"📝 *Overview:*\n{movie['overview'][:450]}..."
+        f"📝 *Overview:*\n{overview}"
     )
     
     try:
+        # স্ট্যাটাস মেসেজ ডিলিট করে ফ্রেশ পোস্ট পাঠানো
         bot.delete_message(m.chat.id, status_msg.message_id)
+        
         if movie['poster']:
+            # ফটো সহ পাঠানোর চেষ্টা
             bot.send_photo(m.chat.id, movie['poster'], caption=caption, parse_mode="Markdown")
         else:
             bot.send_message(m.chat.id, caption, parse_mode="Markdown")
+            
     except Exception as e:
-        bot.send_message(m.chat.id, "⚠️ পোস্ট পাঠাতে সমস্যা হয়েছে!")
+        # যদি কোনো কারণে ফটো পাঠাতে সমস্যা হয় (যেমন ইনভ্যালিড ইউআরএল), তবে শুধু টেক্সট পাঠাবে
+        print(f"Telegram Post Error: {e}")
+        bot.send_message(m.chat.id, caption + "\n\n⚠️ _ইমেজ লোড করা যায়নি, শুধু টেক্সট পাঠানো হলো।_", parse_mode="Markdown")
 
 if __name__ == "__main__":
     keep_alive()
     print("Bot is starting...")
     bot.infinity_polling()
-        
