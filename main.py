@@ -1,4 +1,5 @@
-import telebot, os, requests, time, io
+import os, requests, time, io
+import telebot
 from telebot import types
 from flask import Flask
 from threading import Thread
@@ -18,84 +19,115 @@ def keep_alive():
 # --- Config ---
 API_TOKEN = os.getenv('API_TOKEN')
 TMDB_API_KEY = os.getenv('TMDB_API_KEY')
-# আপনার আইডি এখানে ফিক্সড করে দেওয়া হলো
-ADMIN_ID = 7414830213 
+ADMIN_ID = 7414830213 # আপনার আইডি
 
 bot = telebot.TeleBot(API_TOKEN)
 
-# --- TMDB API Logic ---
+# --- TMDB API Logic (Fixed for Multi-Search) ---
 def get_tmdb_data(q):
-    search_url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&query={q}"
+    # 'multi' এন্ডপয়েন্ট মুভি এবং টিভি সিরিজ দুটোই খুঁজবে
+    search_url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={q}"
     try:
         res = requests.get(search_url).json()
-        if not res['results']: return None
-        movie_id = res['results'][0]['id']
-        detail_url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={TMDB_API_KEY}&language=en-US"
-        movie = requests.get(detail_url).json()
+        if not res.get('results'): return None
         
-        genres = ", ".join([g['name'] for g in movie.get('genres', [])])
-        poster_path = movie.get('poster_path')
+        # 'person' (অ্যাক্টর) স্কিপ করে প্রথম মুভি বা টিভি সিরিজ বের করা
+        item = next((x for x in res['results'] if x['media_type'] in ['movie', 'tv']), None)
+        if not item: return None
+        
+        media_type = item['media_type'] # 'movie' নাকি 'tv'
+        item_id = item['id']
+        
+        # ডিটেইলস ফেচ করা (মুভি বা টিভির ওপর ভিত্তি করে)
+        detail_url = f"https://api.themoviedb.org/3/{media_type}/{item_id}?api_key={TMDB_API_KEY}&language=en-US"
+        details = requests.get(detail_url).json()
+        
+        # টাইটেল এবং রিলিজ ডেট (মুভি এবং টিভির কি-ওয়ার্ড আলাদা হয়)
+        title = details.get('title') if media_type == 'movie' else details.get('name', 'N/A')
+        date = details.get('release_date') if media_type == 'movie' else details.get('first_air_date', 'N/A')
+        
+        # রানটাইম ফিক্স
+        if media_type == 'movie':
+            runtime = str(details.get('runtime', 'N/A')) + " mins"
+        else:
+            runtimes = details.get('episode_run_time', [])
+            runtime = f"{runtimes[0]} mins/ep" if runtimes else "N/A"
+            
+        genres = ", ".join([g['name'] for g in details.get('genres', [])])
+        studios = details.get('production_companies', [])
+        studio = studios[0]['name'] if studios else 'N/A'
+        
+        poster_path = details.get('poster_path')
         poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None
         
         return {
-            "title": movie.get('title', 'N/A'),
-            "date": movie.get('release_date', 'N/A'),
-            "runtime": movie.get('runtime', 'N/A'),
-            "rating": movie.get('vote_average', '0.0'),
-            "votes": movie.get('vote_count', '0'),
+            "type": media_type.upper(), # MOVIE or TV
+            "title": title,
+            "date": date,
+            "runtime": runtime,
+            "rating": round(details.get('vote_average', 0.0), 1),
+            "votes": details.get('vote_count', '0'),
             "genres": genres,
-            "studio": movie.get('production_companies', [{'name': 'N/A'}])[0]['name'],
-            "overview": movie.get('overview', 'No description available.'),
-            "poster": poster_url
+            "studio": studio,
+            "overview": details.get('overview', 'No description available.'),
+            "poster": poster_url,
+            # টিভি সিরিজের জন্য স্পেশাল ডাটা
+            "seasons": details.get('number_of_seasons', 'N/A') if media_type == 'tv' else None,
+            "episodes": details.get('number_of_episodes', 'N/A') if media_type == 'tv' else None
         }
-    except: return None
+    except Exception as e:
+        print(f"Error fetching data: {e}")
+        return None
 
 # --- Telegram Handlers ---
 @bot.message_handler(commands=['start'])
 def start(m):
-    # শুধু আপনি স্টার্ট দিলে কাজ করবে
     if m.from_user.id != ADMIN_ID:
-        bot.reply_to(m, "❌ *অ্যাক্সেস ডিনাইড!*\nএই বটটি ব্যক্তিগত ব্যবহারের জন্য।", parse_mode="Markdown")
-        return
-    bot.reply_to(m, "🎬 *Welcome Admin!*\nমুভির নাম লিখে মেসেজ দিন, আমি পোস্টারসহ ডিটেইলস দিচ্ছি।", parse_mode="Markdown")
+        return bot.reply_to(m, "❌ *অ্যাক্সেস ডিনাইড!*\nএই বটটি ব্যক্তিগত ব্যবহারের জন্য।", parse_mode="Markdown")
+    bot.reply_to(m, "🎬 *Welcome Admin!*\nমুভি বা সিরিজের নাম লিখে মেসেজ দিন, আমি ডিটেইলস দিচ্ছি।", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: True)
 def generate_post(m):
-    # সিকিউরিটি চেক: আপনি ছাড়া অন্য কেউ মেসেজ দিলে কাজ করবে না
-    if m.from_user.id != ADMIN_ID:
-        bot.reply_to(m, "⚠️ আপনি এই বটটি ব্যবহারের অনুমতি পাননি।", parse_mode="Markdown")
-        return
+    if m.from_user.id != ADMIN_ID: return
 
     query = m.text.strip()
     if len(query) < 2: return
     
     status_msg = bot.reply_to(m, "⏳ *তথ্য ও ইমেজ সংগ্রহ করা হচ্ছে...*")
-    movie = get_tmdb_data(query)
+    data = get_tmdb_data(query)
     
-    if not movie:
-        return bot.edit_message_text("😔 মুভিটি পাওয়া যায়নি!", m.chat.id, status_msg.message_id)
+    if not data:
+        return bot.edit_message_text("😔 কন্টেন্টটি TMDB-তে পাওয়া যায়নি!", m.chat.id, status_msg.message_id)
 
-    overview = movie['overview'][:450] + "..." if len(movie['overview']) > 450 else movie['overview']
-    caption = (
-        f"🎬 *{movie['title'].upper()}*\n\n"
-        f"📅 *Release:* {movie['date']}\n"
-        f"⏳ *Duration:* {movie['runtime']} mins\n"
-        f"⭐ *Rating:* {movie['rating']} ({movie['votes']} votes)\n"
-        f"🎭 *Genres:* {movie['genres']}\n"
-        f"🏢 *Studio:* {movie['studio']}\n"
-        f"🌐 *Languages:* English / Hindi\n\n"
-        f"📝 *Overview:*\n{overview}"
-    )
+    overview = data['overview'][:450] + "..." if len(data['overview']) > 450 else data['overview']
+    
+    # আইকন এবং ক্যাপশন সেটআপ (ক্যাটাগরি অনুযায়ী)
+    icon = "🎬" if data['type'] == "MOVIE" else "📺"
+    
+    caption = f"{icon} *{data['title'].upper()}* [{data['type']}]\n\n"
+    caption += f"📅 *First Air/Release:* {data['date']}\n"
+    
+    if data['type'] == 'TV':
+        caption += f"🎞️ *Seasons:* {data['seasons']}\n"
+        caption += f"🔢 *Episodes:* {data['episodes']}\n"
+        
+    caption += f"⏳ *Duration:* {data['runtime']}\n"
+    caption += f"⭐ *Rating:* {data['rating']} ({data['votes']} votes)\n"
+    caption += f"🎭 *Genres:* {data['genres']}\n"
+    caption += f"🏢 *Studio:* {data['studio']}\n"
+    caption += f"🌐 *Languages:* English / Hindi\n\n"
+    caption += f"📝 *Overview:*\n{overview}"
     
     try:
         bot.delete_message(m.chat.id, status_msg.message_id)
-        if movie['poster']:
-            photo_res = requests.get(movie['poster'])
+        if data['poster']:
+            photo_res = requests.get(data['poster'])
             if photo_res.status_code == 200:
-                photo_content = io.BytesIO(photo_res.content)
-                bot.send_photo(m.chat.id, photo_content, caption=caption, parse_mode="Markdown")
-            else: bot.send_message(m.chat.id, caption, parse_mode="Markdown")
-        else: bot.send_message(m.chat.id, caption, parse_mode="Markdown")
+                bot.send_photo(m.chat.id, io.BytesIO(photo_res.content), caption=caption, parse_mode="Markdown")
+            else: 
+                bot.send_message(m.chat.id, caption, parse_mode="Markdown")
+        else: 
+            bot.send_message(m.chat.id, caption, parse_mode="Markdown")
     except:
         bot.send_message(m.chat.id, caption + "\n\n⚠️ _ইমেজ লোড করা যায়নি!_", parse_mode="Markdown")
 
