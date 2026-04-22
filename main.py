@@ -7,7 +7,7 @@ from threading import Thread
 # --- Flask Server Setup ---
 app = Flask(__name__)
 @app.route('/')
-def home(): return "NexFlix Private Gen is Active!"
+def home(): return "NexFlix Multi-Search Bot is Active!"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -23,32 +23,40 @@ ADMIN_ID = 7414830213 # আপনার আইডি
 
 bot = telebot.TeleBot(API_TOKEN)
 
-# --- TMDB API Logic (Fixed for Multi-Search) ---
-def get_tmdb_data(q):
-    # 'multi' এন্ডপয়েন্ট মুভি এবং টিভি সিরিজ দুটোই খুঁজবে
-    search_url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={q}"
+# --- TMDB Multi-Search logic ---
+def search_tmdb(query):
+    url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={query}&language=en-US"
     try:
-        res = requests.get(search_url).json()
-        if not res.get('results'): return None
+        res = requests.get(url).json()
+        results = []
+        if not res.get('results'): return []
         
-        # 'person' (অ্যাক্টর) স্কিপ করে প্রথম মুভি বা টিভি সিরিজ বের করা
-        item = next((x for x in res['results'] if x['media_type'] in ['movie', 'tv']), None)
-        if not item: return None
-        
-        media_type = item['media_type'] # 'movie' নাকি 'tv'
-        item_id = item['id']
-        
-        # ডিটেইলস ফেচ করা (মুভি বা টিভির ওপর ভিত্তি করে)
-        detail_url = f"https://api.themoviedb.org/3/{media_type}/{item_id}?api_key={TMDB_API_KEY}&language=en-US"
-        details = requests.get(detail_url).json()
-        
-        # টাইটেল এবং রিলিজ ডেট (মুভি এবং টিভির কি-ওয়ার্ড আলাদা হয়)
+        # মুভি, টিভি শো এবং এনিমে (টিভি ক্যাটাগরিতে পড়ে) ফিল্টার করা
+        for item in res['results']:
+            if item.get('media_type') in ['movie', 'tv']:
+                title = item.get('title') or item.get('name')
+                date = item.get('release_date') or item.get('first_air_date') or "N/A"
+                year = date.split("-")[0] if date != "N/A" else "N/A"
+                results.append({
+                    "id": item['id'],
+                    "title": title,
+                    "year": year,
+                    "type": item['media_type']
+                })
+        return results[:10] # সর্বোচ্চ ১০টি রেজাল্ট দেখাবে
+    except Exception as e:
+        print(f"Search Error: {e}")
+        return []
+
+def get_detailed_data(item_id, media_type):
+    url = f"https://api.themoviedb.org/3/{media_type}/{item_id}?api_key={TMDB_API_KEY}&language=en-US"
+    try:
+        details = requests.get(url).json()
         title = details.get('title') if media_type == 'movie' else details.get('name', 'N/A')
         date = details.get('release_date') if media_type == 'movie' else details.get('first_air_date', 'N/A')
         
-        # রানটাইম ফিক্স
         if media_type == 'movie':
-            runtime = str(details.get('runtime', 'N/A')) + " mins"
+            runtime = f"{details.get('runtime', 'N/A')} mins"
         else:
             runtimes = details.get('episode_run_time', [])
             runtime = f"{runtimes[0]} mins/ep" if runtimes else "N/A"
@@ -61,7 +69,7 @@ def get_tmdb_data(q):
         poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None
         
         return {
-            "type": media_type.upper(), # MOVIE or TV
+            "type": media_type.upper(),
             "title": title,
             "date": date,
             "runtime": runtime,
@@ -71,67 +79,74 @@ def get_tmdb_data(q):
             "studio": studio,
             "overview": details.get('overview', 'No description available.'),
             "poster": poster_url,
-            # টিভি সিরিজের জন্য স্পেশাল ডাটা
             "seasons": details.get('number_of_seasons', 'N/A') if media_type == 'tv' else None,
             "episodes": details.get('number_of_episodes', 'N/A') if media_type == 'tv' else None
         }
     except Exception as e:
-        print(f"Error fetching data: {e}")
+        print(f"Detail Fetch Error: {e}")
         return None
 
 # --- Telegram Handlers ---
 @bot.message_handler(commands=['start'])
 def start(m):
     if m.from_user.id != ADMIN_ID:
-        return bot.reply_to(m, "❌ *অ্যাক্সেস ডিনাইড!*\nএই বটটি ব্যক্তিগত ব্যবহারের জন্য।", parse_mode="Markdown")
-    bot.reply_to(m, "🎬 *Welcome Admin!*\nমুভি বা সিরিজের নাম লিখে মেসেজ দিন, আমি ডিটেইলস দিচ্ছি।", parse_mode="Markdown")
+        return bot.reply_to(m, "❌ *অ্যাক্সেস ডিনাইড!*", parse_mode="Markdown")
+    bot.reply_to(m, "🎬 *Search System Active!*\nমুভি বা সিরিজের নাম লিখুন।", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: True)
-def generate_post(m):
+def handle_search(m):
     if m.from_user.id != ADMIN_ID: return
-
+    
     query = m.text.strip()
-    if len(query) < 2: return
+    results = search_tmdb(query)
     
-    status_msg = bot.reply_to(m, "⏳ *তথ্য ও ইমেজ সংগ্রহ করা হচ্ছে...*")
-    data = get_tmdb_data(query)
+    if not results:
+        return bot.reply_to(m, "😔 কোনো রেজাল্ট পাওয়া যায়নি!")
     
+    markup = types.InlineKeyboardMarkup()
+    for item in results:
+        # বাটনের টেক্সট হবে: মুভির নাম (বছর) [ক্যাটাগরি]
+        btn_text = f"{item['title']} ({item['year']}) [{'Movie' if item['type'] == 'movie' else 'TV'}]"
+        # Callback data-তে টাইপ এবং আইডি পাঠিয়ে দিচ্ছি
+        callback_data = f"info|{item['type']}|{item['id']}"
+        markup.add(types.InlineKeyboardButton(text=btn_text, callback_data=callback_data))
+    
+    bot.send_message(m.chat.id, f"🔍 *'{query}'* এর জন্য এই রেজাল্টগুলো পাওয়া গেছে:", reply_markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('info|'))
+def callback_info(call):
+    # ডাটা স্প্লিট করা (info|type|id)
+    _, media_type, item_id = call.data.split('|')
+    
+    # লোডিং মেসেজ (ঐচ্ছিক, এডিট করে দিলে সুন্দর লাগে)
+    bot.answer_callback_query(call.id, "তথ্য সংগ্রহ করা হচ্ছে...")
+    
+    data = get_detailed_data(item_id, media_type)
     if not data:
-        return bot.edit_message_text("😔 কন্টেন্টটি TMDB-তে পাওয়া যায়নি!", m.chat.id, status_msg.message_id)
+        return bot.send_message(call.message.chat.id, "❌ ডাটা লোড করতে সমস্যা হয়েছে।")
 
     overview = data['overview'][:450] + "..." if len(data['overview']) > 450 else data['overview']
-    
-    # আইকন এবং ক্যাপশন সেটআপ (ক্যাটাগরি অনুযায়ী)
     icon = "🎬" if data['type'] == "MOVIE" else "📺"
     
     caption = f"{icon} *{data['title'].upper()}* [{data['type']}]\n\n"
-    caption += f"📅 *First Air/Release:* {data['date']}\n"
-    
+    caption += f"📅 *Release:* {data['date']}\n"
     if data['type'] == 'TV':
-        caption += f"🎞️ *Seasons:* {data['seasons']}\n"
-        caption += f"🔢 *Episodes:* {data['episodes']}\n"
-        
+        caption += f"🎞️ *Seasons:* {data['seasons']} | 🔢 *Episodes:* {data['episodes']}\n"
     caption += f"⏳ *Duration:* {data['runtime']}\n"
     caption += f"⭐ *Rating:* {data['rating']} ({data['votes']} votes)\n"
     caption += f"🎭 *Genres:* {data['genres']}\n"
     caption += f"🏢 *Studio:* {data['studio']}\n"
-    caption += f"🌐 *Languages:* English / Hindi\n\n"
     caption += f"📝 *Overview:*\n{overview}"
     
     try:
-        bot.delete_message(m.chat.id, status_msg.message_id)
         if data['poster']:
             photo_res = requests.get(data['poster'])
-            if photo_res.status_code == 200:
-                bot.send_photo(m.chat.id, io.BytesIO(photo_res.content), caption=caption, parse_mode="Markdown")
-            else: 
-                bot.send_message(m.chat.id, caption, parse_mode="Markdown")
-        else: 
-            bot.send_message(m.chat.id, caption, parse_mode="Markdown")
-    except:
-        bot.send_message(m.chat.id, caption + "\n\n⚠️ _ইমেজ লোড করা যায়নি!_", parse_mode="Markdown")
+            bot.send_photo(call.message.chat.id, io.BytesIO(photo_res.content), caption=caption, parse_mode="Markdown")
+        else:
+            bot.send_message(call.message.chat.id, caption, parse_mode="Markdown")
+    except Exception as e:
+        bot.send_message(call.message.chat.id, f"⚠️ ভুল হয়েছে: {e}")
 
 if __name__ == "__main__":
     keep_alive()
     bot.infinity_polling()
-        
